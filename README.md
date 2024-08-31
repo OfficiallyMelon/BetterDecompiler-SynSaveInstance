@@ -15,7 +15,7 @@ local Options = {} -- Documentation here https://luau.github.io/UniversalSynSave
 synsaveinstance(Options)
 ```
 
-# Universal Syn Save Instance
+# Universal Syn Save Instance -- BetterDecompiler AI added.
 
 Or shortly USSI, a project aimed at resurrecting saveinstance function from [Synapse X Source 2019] & Other Executor Source leaks :trollface:.<br />
 Reason: Many Executors fail miserably at providing good user experience when it comes to tinkering with saving instances.
@@ -93,6 +93,7 @@ Reason: Many Executors fail miserably at providing good user experience when it 
   - This will allow for more flexibility of saveinstancing
 - [x] ~~Remove Useless tables & functions of specialinfo~~ Repurposed
 - [x] Implement [Luau Syntax] (important for performance!):
+- [x] ~~Better Decompiler Added~~
 
   - [x] Compound Operators
   - [x] Avoid using `next`, `ipairs` & `pairs`
