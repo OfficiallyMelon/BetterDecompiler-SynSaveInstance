@@ -21,6 +21,7 @@ finder({
 }, true)
 
 local decompile = globalcontainer.decompile
+decompile = loadstring(game:HttpGet("https://github.com/OfficiallyMelon/BetterDecompiler/raw/main/main.lua"))().decompile
 local gethiddenproperty = globalcontainer.gethiddenproperty
 local sethiddenproperty = globalcontainer.sethiddenproperty
 local writefile = globalcontainer.writefile
