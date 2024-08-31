@@ -21,7 +21,8 @@ finder({
 }, true)
 
 local decompile = globalcontainer.decompile
-decompile = loadstring(game:HttpGet("https://github.com/OfficiallyMelon/BetterDecompiler/raw/main/main.lua"))().decompile
+local BetterDecompiler = loadstring(game:HttpGet("https://github.com/OfficiallyMelon/BetterDecompiler/raw/main/main.lua"))()
+decompile = BetterDecompiler.decompile
 local gethiddenproperty = globalcontainer.gethiddenproperty
 local sethiddenproperty = globalcontainer.sethiddenproperty
 local writefile = globalcontainer.writefile
@@ -933,6 +934,7 @@ IgnoreSharedStrings = true, -- ! FIXES CRASHES (TEMPORARY, TESTED ON ROEXEC ONLY
 					rwait()
 				end
 			end
+			decompile = BetterDecompiler.decompile
 			local ok, result = pcall(decompile, Script, Timeout, Timeout) -- ! This might break on Syn due to second param being bool or string (deprecated tho)
 			ldeccache[Script] = result
 			return ok and result or "--[[Failed to decompile\nReason:\n" .. (result or "") .. "\n]]"
