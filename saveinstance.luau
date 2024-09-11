@@ -248,6 +248,7 @@ local SharedString_identifiers = setmetatable({
 local Type_IDs = {
 	string = 0x02,
 	boolean = 0x03,
+	-- int32 = 0x04,
 	-- float = 0x05,
 	number = 0x06,
 	UDim = 0x09,
@@ -504,21 +505,6 @@ end
 
 local XML_Descriptors
 XML_Descriptors = {
-	__APIPRECISION = function(raw, precision)
-		if raw == 0 or raw % 1 == 0 then
-			return raw
-		end
-
-		local Extreme = XML_Descriptors.__EXTREME(raw)
-		if Extreme then
-			return Extreme
-		end
-
-		-- TODO: scientific notation formatting also takes place if value is a decimal (only counts if it starts with 0.) then values like 0.00008 will be formatted as 8.0000000000000006544e-05 ("%.19e"), it must have 5 or more consecutive (?) zeros for this, on other hand, if it doesn't start with 0. then e20+ format is applied in case it has 20 or more consecutive (?) zeros so 1e20 will be formatted as 1e+20 and upwards (1e+19 is not allowed, same as 1e-04 for decimals)
-		-- ? The good part is compression of value so less file size BUT at the potential cost of precision loss
-
-		return string.format("%." .. precision .. "f", raw)
-	end,
 	__BIT = function(...) -- * Credits to Friend (you know yourself)
 		local Value = 0
 
@@ -537,16 +523,15 @@ XML_Descriptors = {
 		return raw.Value, "token"
 	end,
 	__EXTREME = function(raw)
-		local Extreme
 		if raw ~= raw then
-			Extreme = "NAN"
+			return "NAN"
 		elseif raw == math.huge then
-			Extreme = "INF"
+			return "INF"
 		elseif raw == -math.huge then
-			Extreme = "-INF"
+			return "-INF"
 		end
 
-		return Extreme
+		return raw
 	end,
 	__EXTREME_RANGE = function(raw)
 		return raw ~= raw and "0" or raw -- Normally we should return "-nan(ind)" instead of "0" but this adds more compatibility
@@ -755,7 +740,7 @@ XML_Descriptors = {
 
 		return Identifier
 	end,
-	-- SecurityCapabilities = function(raw) return raw end,
+	SecurityCapabilities = tostring, -- TODO: Find a faster solution
 	-- SystemAddress = function(raw) return raw end,
 	UDim = function(raw)
 		--[[
@@ -819,16 +804,10 @@ XML_Descriptors = {
 	bool = function(raw)
 		return raw and "true" or "false"
 	end,
-	double = function(raw) -- Float64
-		return XML_Descriptors.__APIPRECISION(raw, 17) --? A precision of at least 17 is required to properly represent a 64-bit floating point value, so this amount is recommended.
-	end, -- ? wouldn't float be better as an optimization
-	float = function(raw) -- Float32
-		return XML_Descriptors.__APIPRECISION(raw, 9) -- ? A precision of at least 9 is required to properly represent a 32-bit floating point value, so this amount is recommended.
-	end,
-	int = function(raw) -- Int32
-		return XML_Descriptors.__EXTREME(raw) or raw
-	end,
-	int64 = nil,
+	double = nil, -- Float64
+	float = nil, -- Float32
+	int = nil, -- Int32
+	int64 = nil, -- Int64 (long)
 	string = function(raw, skipEmptyCheck)
 		return not skipEmptyCheck and (raw == "" and raw or raw == nil and "")
 			or string_find(raw, "]]>") and string.gsub(raw, ESCAPES_PATTERN, ESCAPES)
@@ -840,7 +819,10 @@ for descriptorName, redirectName in
 		NumberSequence = "__SEQUENCE",
 		Vector2int16 = "Vector2",
 		Vector3int16 = "Vector3",
-		int64 = "int", -- Int64 (long)
+		double = "__EXTREME",
+		float = "__EXTREME",
+		int = "__EXTREME",
+		int64 = "__EXTREME",
 	}
 do
 	XML_Descriptors[descriptorName] = XML_Descriptors[redirectName]
@@ -849,7 +831,13 @@ end
 local ClassList
 
 do
-	local ClassPropertyExceptions = { TriangleMeshPart = ArrayToDictionary({ "CollisionFidelity" }) }
+	local ClassPropertyExceptions = {
+		Whitelist = { TriangleMeshPart = ArrayToDictionary({ "CollisionFidelity" }) },
+		Blacklist = {
+			LuaSourceContainer = ArrayToDictionary({ "ScriptGuid" }),
+			Instance = ArrayToDictionary({ "UniqueId", "HistoryId", "Capabilities" }),
+		},
+	}
 
 	local NotScriptableFixes =
 		{ -- For more info: https://github.com/luau/UniversalSynSaveInstance/blob/master/Tests/Potentially%20Missing%20Properties%20Tracker.luau
@@ -1143,6 +1131,8 @@ do
 
 		local classList = {}
 
+		local ClassesWhitelist, ClassesBlacklist = ClassPropertyExceptions.Whitelist, ClassPropertyExceptions.Blacklist
+
 		for _, API_Class in service.HttpService:JSONDecode(API_Dump).Classes do
 			local ClassProperties, ClassProperties_size = {}, 1
 			local Class = {
@@ -1161,7 +1151,7 @@ do
 
 			-- ? Check 96ea8b2a755e55a78aedb55a7de7e83980e11077 commit - If a NotScriptableFix is needed that relies on another NotScriptable Property (which doesn't really make sense in the first place)
 
-			local ClassExceptions = ClassPropertyExceptions[ClassName]
+			local ClassWhitelist, ClassBlacklist = ClassesWhitelist[ClassName], ClassesBlacklist[ClassName]
 
 			for _, Member in API_Class.Members do
 				if Member.MemberType == "Property" then
@@ -1176,7 +1166,10 @@ do
 							A very simple fix for many problems that saveinstance scripts encounter!
 						--]]
 						local PropertyName = Member.Name
-						if Serialization.CanSave or ClassExceptions and ClassExceptions[PropertyName] then
+						if
+							(Serialization.CanSave or ClassWhitelist and ClassWhitelist[PropertyName])
+							and not (ClassBlacklist and ClassBlacklist[PropertyName])
+						then
 							local MemberTags = Member.Tags
 
 							local ValueType = Member.ValueType
@@ -1262,9 +1255,11 @@ local GLOBAL_ENV = getgenv and getgenv() or _G or shared
 --- @field __DEBUG_MODE boolean -- Recommended to enable if you wish to help us improve our products and find bugs / issues with it! ___Default:___ false
 --- @field ReadMe boolean --___Default:___ true
 --- @field SafeMode boolean -- Kicks you before Saving, which prevents you from being detected in any game. ___Default:___ false
+--- @field ShutdownWhenDone boolean -- Shuts the game down after saveinstance is finished. ___Default:___ false
 --- @field AntiIdle boolean -- Prevents the 20-minute-Idle Kick. ___Default:___ true
 --- @field Anonymous boolean -- * **RISKY:** Cleans the file of any info related to your account like: Name, UserId. This is useful for some games that might store that info in GUIs or other Instances. Might potentially mess up parts of strings that contain characters that match your Name or parts of numbers that match your UserId. ___Default:___ false
 --- @field ShowStatus boolean -- ___Default:___ true
+--- @field Callback boolean -- If set, the serialized data will be sent to the callback function instead of to file. ___Default:___ nil
 --- @field mode string -- Change this to invalid mode like "invalid" if you only want ExtraInstances. "optimized" mode is **NOT** supported with *@Object* option. ___Default:___ `"optimized"`
 --- @field noscripts boolean -- ___Aliases:___ `Decompile`. ___Default:___ false
 --- @field scriptcache boolean -- ___Default:___ true
@@ -1293,11 +1288,11 @@ local GLOBAL_ENV = getgenv and getgenv() or _G or shared
 --- @field SaveNonCreatable boolean -- * Includes non-serializable instances as Folder objects (Name is misleading as this is mostly a fix for certain NilInstances and isn't always related to NotCreatable). ___Default:___ false
 --- .NotCreatableFixes table<Instance.ClassName> -- * {"Player"} is the same as {Player = "Folder"}; Format like {SpawnLocation = "Part"} is only to be used when SpawnLocation inherits from "Part" AND "Part" is Creatable. ___Default:___ { "Player", "PlayerScripts", "PlayerGui" }
 --- @field IsolatePlayers boolean -- * This option does save players, it's just they won't show up in Studio and can only be viewed through the place file code (in text editor). More info at https://github.com/luau/UniversalSynSaveInstance/issues/2. ___Default:___ false
+--- @field AlternativeWritefile boolean -- * Uses breaks down file content string into segments and writes them using appendfile. This might help with crashes when it starts writing to file. ___Default:___ true
 --- @field IgnoreDefaultPlayerScripts boolean -- * **RISKY: Ignores Default PlayerScripts like PlayerModule & RbxCharacterSounds. Prevents crashes on certain Executors. ___Default:___ true
 --- @field IgnoreSharedStrings boolean -- * **RISKY: FIXES CRASHES (TEMPORARY, TESTED ON ROEXEC ONLY). FEEL FREE TO DISABLE THIS TO SEE IF IT WORKS FOR YOU**. ___Default:___ true
 --- @field SharedStringOverwrite boolean -- * **RISKY:** if the process is not finished aka crashed then none of the affected values will be available. SharedStrings can also be used for ValueTypes that aren't `SharedString`, this behavior is not documented anywhere but makes sense (Could create issues though, due to _potential_ ValueType mix-up, only works on certain types which are all base64 encoded so far). Reason: Allows for potential smaller file size (can also be bigger in some cases). ___Default:___ false
 --- @field TreatUnionsAsParts boolean -- * **RISKY:** Converts all UnionOperations to Parts. Useful if your Executor isn't able to save (read) Unions, because otherwise they will be invisible. ___Default:___ false (except Solara)
---- @field AlternativeWritefile boolean -- * **RISKY:** Uses breaks down file content string into segments and writes them using appendfile. This might help with crashes when it starts writing to file. ___Default:___ false
 
 --- @interface OptionsAliases
 --- @within SynSaveInstance
@@ -1346,7 +1341,7 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 		end
 	end
 
-	local totalstr, totalsize = "", 0
+	local currentstr, currentsize, totalsize, chunks = "", 0, 0, table.create(1)
 	local savebuffer, savebuffer_size = { '<roblox version="4">' }, 2
 
 	local StatusText
@@ -1361,7 +1356,7 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 		__DEBUG_MODE = false,
 
 		-- Binary = false, -- true in syn newer versions (false in our case because no binary support yet), Description: Saves everything in Binary Mode (rbxl/rbxm).
-		--Callback = nil, -- Description: If set, the serialized data will be sent to the callback instead of to file.
+		Callback = nil,
 		--Clipboard/CopyToClipboard = false, -- Description: If set to true, the serialized data will be set to the clipboard, which can be later pasted into studio easily. Useful for saving models.
 		-- MaxThreads = 3 -- Description: The number of decompilation threads that can run at once. More threads means it can decompile for scripts at a time.
 		-- DisableCompression = false, --Description: Disables compression in the binary output
@@ -1375,7 +1370,7 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 		IgnoreDefaultPlayerScripts = EXECUTOR_NAME ~= "Wave" and true,
 		SaveBytecode = false,
 
-		IgnoreProperties = { "ScriptGuid", "UniqueId", "HistoryId" },
+		IgnoreProperties = {},
 
 		IgnoreList = { service.CoreGui, service.CorePackages },
 
@@ -1386,6 +1381,7 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 		SaveCacheInterval = 0x1600 * 10,
 		ShowStatus = true,
 		SafeMode = false,
+		ShutdownWhenDone = false,
 		AntiIdle = true,
 		Anonymous = false,
 		ReadMe = true,
@@ -1412,7 +1408,7 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 		IgnoreSharedStrings = EXECUTOR_NAME ~= "Wave" and true,
 		SharedStringOverwrite = false,
 		TreatUnionsAsParts = EXECUTOR_NAME == "Solara", -- TODO Temporary true (once removed, remove Note from docs too)
-		AlternativeWritefile = ArrayToDictionary({ "Solara", "Celery" })[EXECUTOR_NAME] or false, -- TODO Temporary true (once removed, remove Note from docs too)
+		AlternativeWritefile = true,
 
 		OptionsAliases = { -- You can't really modify these as a user
 			FilePath = "FileName",
@@ -1937,7 +1933,7 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 			end
 		else
 			ldecompile = function()
-				return "-- Decompiling is NOT supported on your executor"
+				return "-- Your Executor does NOT have a Decompiler"
 			end
 		end
 	end
@@ -2082,16 +2078,24 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 		return prop_list
 	end
 
-	local function save_cache()
+	local CHUNK_LIMIT = 200 * 1024 * 1024 -- string length overflow prevention
+	local function save_cache(final)
 		local savestr = table.concat(savebuffer)
-		totalstr ..= savestr -- TODO: Causes "not enough memory" error on some exec
+		currentstr ..= savestr -- TODO: Causes "not enough memory" error on some exec
 
 		-- writefile(placename, totalstr)
 		-- appendfile(placename, savestr) -- * supposedly causes uneven amount of Tags (e.g. <Item> must be closed with </Item> but sometimes there's more of one than the other). While being under load, the function produces unexpected output?
-		totalsize += #savestr
+		local savestr_len = #savestr
+		totalsize += savestr_len
+		currentsize += savestr_len
 
 		table.clear(savebuffer)
 		savebuffer_size = 1
+
+		if CHUNK_LIMIT < currentsize or final then
+			table.insert(chunks, { size = currentsize, str = currentstr })
+			currentstr, currentsize = "", 0
+		end
 
 		if StatusText then
 			StatusText.Text = "Saving.. Size: " .. get_size_format()
@@ -2361,6 +2365,7 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 										local LinkedSource
 										local LinkedSource_Url = instance.LinkedSource -- ! Assuming every Class that has ProtectedString Source property also has a LinkedSource property
 										local hasLinkedSource = LinkedSource_Url ~= ""
+										local LinkedSource_type
 										if hasLinkedSource then
 											local Path = instance:GetFullName()
 											if RecoveredScripts then
@@ -2395,9 +2400,9 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 													return true
 												end
 
-												local asset = (string.find(LinkedSource, "%a") and "hash" or "id")
-													.. "="
-													.. LinkedSource
+												LinkedSource_type = string.find(LinkedSource, "%a") and "hash" or "id"
+
+												local asset = LinkedSource_type .. "=" .. LinkedSource
 
 												local source
 												local ok = pcall(function()
@@ -2462,7 +2467,7 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 										end
 
 										value = "-- Saved by UniversalSynSaveInstance https://discord.gg/wx4ThpAsmw\n\n"
-											.. (hasLinkedSource and "-- Original Source: https://assetdelivery.roblox.com/v1/asset/?id=" .. (LinkedSource or LinkedSource_Url) .. "\n\n" or "")
+											.. (hasLinkedSource and "-- Original Source: https://assetdelivery.roblox.com/v1/asset/?" .. (LinkedSource_type or "id") .. "=" .. (LinkedSource or LinkedSource_Url) .. "\n\n" or "")
 											.. value
 									end
 								end
@@ -2685,7 +2690,7 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 
 		savebuffer[savebuffer_size] = "</roblox>"
 		savebuffer_size += 1
-		save_cache()
+		save_cache(true)
 		do
 			-- ! Assuming we only write to file once hence why we only filter once
 			-- TODO This might cause issues on non-unique Usernames (ex. "Cake" if game is about cakes then everything supposedly related to your name will be replaced with "Roblox"); Certain UserIds might also affect numbers, like if your UserId is 2481848 and there is some number that goes like "1.248184818837" then that the matched part will be replaced with 1, potentially making the number incorrect.
@@ -2694,29 +2699,48 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 			if OPTIONS.Anonymous then
 				local LocalPlayer = service.Players.LocalPlayer
 
-				totalstr = string.gsub(string.gsub(totalstr, LocalPlayer.UserId, "1"), LocalPlayer.Name, "Roblox")
+				for _, chunk in chunks do
+					chunk.str = string.gsub(string.gsub(chunk.str, LocalPlayer.UserId, "1"), LocalPlayer.Name, "Roblox")
+				end
 			end
 
-			if OPTIONS.AlternativeWritefile and appendfile then
-				local SegmentLength = 4145728 -- Celery has an arbitrary savefile/appendfile size limit of ~4MB for reasons unknown. This is a workaround to save the file in segments.
-				local Length = math.ceil(totalsize / SegmentLength)
+			local Callback = OPTIONS.Callback
+			if Callback then
+				local totalstr = ""
+				for _, chunk in chunks do
+					totalstr ..= chunk.str
+				end
+				Callback(totalstr)
+			elseif OPTIONS.AlternativeWritefile and appendfile then
+				local SEGMENT_SIZE = 4145728 -- Celery has an arbitrary savefile/appendfile size limit of ~4MB for reasons unknown. This is a workaround to save the file in segments.
 
-				for i = 1, Length do
-					local savestr = string.sub(totalstr, (i - 1) * SegmentLength + 1, i * SegmentLength)
+				local totallen, currentlen = math.ceil(totalsize / SEGMENT_SIZE), 1
 
-					run_with_loading(
-						"Writing to File " .. math.round(i / Length * 100) .. "% (Depends on Exec)",
-						nil,
-						true,
-						appendfile,
-						placename,
-						savestr
-					)
-					if i ~= Length then
-						task.wait()
+				for _, chunk in chunks do
+					local length = math.ceil(chunk.size / SEGMENT_SIZE)
+					for i = 1, length do
+						local savestr = string.sub(chunk.str, (i - 1) * SEGMENT_SIZE + 1, i * SEGMENT_SIZE)
+
+						run_with_loading(
+							"Writing to File " .. math.round(currentlen / totallen * 100) .. "% (Depends on Exec)",
+							nil,
+							true,
+							appendfile,
+							placename,
+							savestr
+						)
+						currentlen += 1
+
+						if i ~= length then
+							task.wait()
+						end
 					end
 				end
 			else
+				local totalstr = ""
+				for _, chunk in chunks do
+					totalstr ..= chunk.str
+				end
 				run_with_loading(
 					"Writing " .. get_size_format() .. " to File (Depends on Exec)",
 					nil,
@@ -2859,7 +2883,7 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 					service.UserInputService:GetMouseLocation().X,
 					service.UserInputService:GetMouseLocation().Y,
 					true,
-					nil
+					game
 				)
 			end)
 		end
@@ -2909,6 +2933,10 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 				end
 				StatusText:Destroy()
 			end)
+		end
+
+		if OPTIONS.ShutdownWhenDone then
+			game:Shutdown()
 		end
 	end
 end
